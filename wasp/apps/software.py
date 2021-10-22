@@ -17,6 +17,7 @@ whilst still allowing users to activate so many awesome applications!
 import wasp
 import icons
 import os
+import gc
 
 
 class SoftwareApp():
@@ -119,6 +120,7 @@ class SoftwareApp():
                     for app in wasp.system.launcher_ring:
                         if type(app).__name__.startswith(label):
                             wasp.system.launcher_ring.remove(app)
+                            gc.collect()
                             break
                 break
 
