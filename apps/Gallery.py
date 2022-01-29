@@ -9,20 +9,20 @@ An application that shows images stored in the filesystem.
 .. figure:: res/GalleryApp.png
     :width: 179
 
-Only 240x240 images are supported for now.
-The images have to be uploaded in the gallery directory.
-The images have to be encoded as raw RGB565 data in big endian byte order.
-To encode them, you can use ffmpeg:
+The images have to be uploaded in the "gallery" directory.
+The images have to be encoded as BMP RGB565 data in big endian byte order.
+To encode them, you can use GIMP (File → Export, select the BMP format,
+set "R5 G6 B5" in "Advanced Options"), or ImageMagick:
 
 .. code-block:: sh
 
-    ffmpeg -vcodec png -i my_image.png -vcodec rawvideo -f rawvideo -pix_fmt rgb565be my_image.rgb565
+    convert -define bmp:subtype=RGB565 my_image.png my_image.bmp
 
 And to upload:
 
 .. code-block:: sh
 
-    ./tools/wasptool --binary --upload my_image.rgb565 --as gallery/my_image
+    ./tools/wasptool --binary --upload my_image.bmp --as gallery/my_image
 """
 
 import wasp
@@ -97,17 +97,50 @@ class GalleryApp():
             draw.string(filename[:(draw.wrap(filename, 240)[1])], 0, 200)
             file = open("gallery/{}".format(filename), "rb")
             display = wasp.watch.display
-            display.set_window(0, 0, 240, 240)
+
+            # check that we are reading a RGB565 BMP
+            magic = file.read(2)
+            if magic != b'BM': # check BMP magic number
+                raise ValueError # TODO a decent error on screen
+            file.seek(0x0A)
+            data_offset = int.from_bytes(file.read(4), 'little')
+            file.seek(0x0E)
+            dib_len = int.from_bytes(file.read(4), 'little')
+            if dib_len != 124: # check header V5
+                raise ValueError # TODO a decent error on screen
+            width = int.from_bytes(file.read(4), 'little')
+            height = int.from_bytes(file.read(4), 'little')
+            # width and height are signed, but only height can actually be negative
+            if height >= 2147483648:
+                height = 4294967296 - height
+                bottom_up = False
+            else: bottom_up = True
+            if width > 240 or height > 240: # check size <= 240x240
+                raise ValueError # TODO a decent error on screen
+            file.seek(0x1C)
+            bit_count = int.from_bytes(file.read(2), 'little')
+            if bit_count != 16: # check 16 bpp
+                raise ValueError # TODO a decent error on screen
+            compression = int.from_bytes(file.read(4), 'little')
+            if compression != 3: # check bitmask mode
+                raise ValueError # TODO a decent error on screen
+            file.seek(0x36)
+            bitmask = file.read(4), file.read(4), file.read(4)
+            if bitmask != (b'\x00\xF8\x00\x00', b'\xE0\x07\x00\x00', b'\x1F\x00\x00\x00'): # check bitmask RGB565
+                raise ValueError # TODO a decent error on screen
+
+            display.set_window((240 - width) // 2, 0, width, height)
+
+            file.seek(data_offset)
 
             # We don't have enough memory to load the entire image at once, so
             # we stream it from flash memory to the display
-            #TODO: why can't we do it in a single quick write session?
-            #display.quick_start()
-            buf = display.linebuffer[:2*240]
-            read = 1
-            while read > 0:
-                read = file.readinto(buf)
-                #display.quick_write(buf)
+            buf = display.linebuffer[:2*width]
+            for y in reversed(range(0, height)):
+                if bottom_up: file.seek(data_offset + y * width * 2)
+                file.readinto(buf)
+                for x in range(0, width): # MAYBE do this when reading into the buffer?
+                    buf[x*2], buf[x*2+1] = buf[x*2+1], buf[x*2]
                 display.write_data(buf)
-            #display.quick_end()
+
             file.close()
